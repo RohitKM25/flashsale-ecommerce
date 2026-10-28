@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flash-Sale Architecture | Smartphone X</title>
+  <meta name="description"
+    content="High-concurrency flash sale e-commerce platform. Zero overselling guarantee with Redis atomic reservations, queue throttling, and SSE." />
+  <link rel="icon" type="image/svg+xml"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%230f172a'><path d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+</head>
+
+<body>
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="nav-inner">
+      <a href="#" class="brand" id="brand-logo">
+        <span>ESTORE</span>
+        <span class="brand-badge">FLASH SALE</span>
+      </a>
+
+      <div class="nav-actions">
+        <div class="replica-pill" id="cluster-indicator" title="Connected backend instance">
+          <span class="pulse-dot"></span>
+          <span id="replica-label">Ingress: Active</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-container">
+    <!-- Split Screen Layout -->
+    <div class="split-layout">
+      <!-- LEFT PANE: Flash Sale Client Experience -->
+      <div class="split-pane-left">
+        <!-- Flash-Sale Hero Card -->
+        <section class="flash-hero" id="flash-sale-hero">
+          <div class="hero-content">
+            <h1 class="hero-title" id="hero-product-title">Smartphone X</h1>
+
+            <div class="price-row">
+              <span class="price-flash" id="hero-flash-price">399.99</span>
+            </div>
+
+            <!-- Real-Time Stock Meter -->
+            <div class="stock-meter-card">
+              <div class="stock-meter-header">
+                <span class="stock-label">
+                  <span id="stock-icon"></span>
+                  <span>Real-Time Inventory (Atomic Redis)</span>
+                </span>
+                <span class="stock-count" id="hero-stock-count">500 / 500 Left</span>
+              </div>
+              <div class="stock-track">
+                <div class="stock-fill" id="hero-stock-fill" style="width: 100%;"></div>
+              </div>
+            </div>
+
+            <!-- Checkout & Debounce CTA -->
+            <div class="hero-cta-group">
+              <button class="btn-checkout" id="btn-flash-checkout">
+                <span id="btn-flash-icon"></span>
+                <span id="btn-flash-text">RESERVE SMARTPHONE X NOW</span>
+              </button>
+              <button class="btn-share" id="btn-share-deal" title="Share with friends">
+                <span id="share-icon"></span>
+              </button>
+            </div>
+
+            <!-- Optimistic UI & Real-Time SSE Order Status Container -->
+            <div id="order-status-container" style="display: none;"></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- RIGHT PANE: Real-Time Benchmark & Architecture Control Center -->
+      <div class="split-pane-right">
+        <section class="benchmark-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Concurrency & Consistency Benchmark</h2>
+            <p class="panel-subtitle">
+              Live verification of Redis Lua atomic decrement, asynchronous queue decoupling, and PostgreSQL conditional
+              ACID ledger with 0 oversell guarantee.
+            </p>
+          </div>
+
+          <!-- Live Metrics 2x2 Grid -->
+          <div class="bench-grid">
+            <div class="stat-metric-card">
+              <div class="stat-label">Redis In-Memory Stock</div>
+              <div class="stat-value" id="stat-redis-stock">--</div>
+            </div>
+            <div class="stat-metric-card">
+              <div class="stat-label">PostgreSQL Stock</div>
+              <div class="stat-value" id="stat-pg-stock">--</div>
+            </div>
+            <div class="stat-metric-card">
+              <div class="stat-label">Committed DB Orders</div>
+              <div class="stat-value" id="stat-orders-count">--</div>
+            </div>
+            <div class="stat-metric-card">
+              <div class="stat-label">Oversell Count</div>
+              <div class="stat-value stat-zero-oversell" id="stat-oversell-count">0 (Guaranteed)</div>
+            </div>
+          </div>
+
+          <!-- Live Telemetry Console Log -->
+          <div class="bench-log-card" id="bench-log">
+            [System Ready] Ready to initiate high-throughput concurrency test.
+          </div>
+
+          <!-- Benchmark Actions -->
+          <div class="bench-actions">
+            <button class="btn-rush" id="btn-run-1000">
+              Launch 1,000 Concurrent Requests Blitz
+            </button>
+            <button class="btn-rush-alt" id="btn-run-2000">
+              Launch 2,000 Concurrent Requests
+            </button>
+            <button class="btn-reset" id="btn-reset-inventory">
+              Reset 500 Inventory
+            </button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+
+</html>

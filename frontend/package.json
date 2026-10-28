@@ -1,0 +1,13 @@
+{
+  "name": "flashsale-frontend",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight high-performance flash-sale SPA with SSE, debouncing, and optimistic UI",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  }
+}

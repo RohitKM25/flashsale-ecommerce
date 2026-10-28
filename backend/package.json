@@ -1,0 +1,19 @@
+{
+  "name": "flashsale-backend",
+  "version": "1.0.0",
+  "description": "High-traffic flash sale backend with Redis Lua atomic reservations and SSE",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2",
+    "pg": "^8.13.1",
+    "uuid": "^11.0.5"
+  }
+}

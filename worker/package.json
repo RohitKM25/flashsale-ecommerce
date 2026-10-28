@@ -1,0 +1,15 @@
+{
+  "name": "flashsale-worker",
+  "version": "1.0.0",
+  "description": "Asynchronous batch consumer worker for database persistence and immutable ledger",
+  "main": "src/worker.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/worker.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "ioredis": "^5.4.2",
+    "pg": "^8.13.1"
+  }
+}

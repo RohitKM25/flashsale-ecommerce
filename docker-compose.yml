@@ -1,0 +1,108 @@
+services:
+  # Relational Database for ACID Consistency & Immutable Ledger
+  postgres:
+    image: postgres:16-alpine
+    container_name: flashsale-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flashsale
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d flashsale"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # High-Throughput In-Memory Caching, Atomic Lua Scripting & Message Streams
+  redis:
+    image: redis:7-alpine
+    container_name: flashsale-redis
+    restart: always
+    command: redis-server --save 60 1 --loglevel notice
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # Clustered Backend Replica 1
+  backend-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flashsale-backend-1
+    restart: always
+    environment:
+      PORT: 3000
+      REPLICA_ID: backend-replica-1
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Clustered Backend Replica 2 (Horizontal Scalability)
+  backend-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: flashsale-backend-2
+    restart: always
+    environment:
+      PORT: 3000
+      REPLICA_ID: backend-replica-2
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Asynchronous Queue Worker (Throttled DB Transactions & Immutable Ledger Append)
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: flashsale-worker
+    restart: always
+    environment:
+      WORKER_ID: worker-node-1
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
+      REDIS_URL: redis://redis:6379
+      BATCH_SIZE: 25
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Nginx Ingress Load Balancer & Edge Static Asset Caching
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    container_name: flashsale-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "8080:80"
+    depends_on:
+      - backend-1
+      - backend-2
+
+volumes:
+  postgres_data:
+  redis_data:
