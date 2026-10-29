@@ -107,6 +107,22 @@
             </div>
           </div>
 
+          <!-- RabbitMQ Queue Telemetry -->
+          <div class="queue-stat-card" id="rabbitmq-stats">
+            <div class="queue-stat-item">
+              <span class="queue-stat-label">RabbitMQ Status</span>
+              <span class="queue-stat-value queue-status" id="stat-rabbitmq-status">--</span>
+            </div>
+            <div class="queue-stat-item">
+              <span class="queue-stat-label">Queue Depth</span>
+              <span class="queue-stat-value" id="stat-rabbitmq-queue">--</span>
+            </div>
+            <div class="queue-stat-item">
+              <span class="queue-stat-label">Active Consumers</span>
+              <span class="queue-stat-value" id="stat-rabbitmq-consumers">--</span>
+            </div>
+          </div>
+
           <!-- Live Telemetry Console Log -->
           <div class="bench-log-card" id="bench-log">
             [System Ready] Ready to initiate high-throughput concurrency test.

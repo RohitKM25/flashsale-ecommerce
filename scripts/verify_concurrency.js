@@ -23,7 +23,7 @@ async function runTest() {
   try {
     const healthRes = await fetch(`${BASE_URL}/health`);
     const health = await healthRes.json();
-    console.log(`[Health Check] Ingress OK | Backend Replica: ${health.replicaId} | Database: ${health.database} | Redis: ${health.redis}`);
+    console.log(`[Health Check] Ingress OK | Backend Replica: ${health.replicaId} | Database: ${health.database} | Redis: ${health.redis} | RabbitMQ: ${health.rabbitmq}`);
   } catch (err) {
     console.error(`[Error] System is not reachable at ${BASE_URL}. Ensure docker-compose is running.`);
     process.exit(1);
@@ -86,8 +86,8 @@ async function runTest() {
   console.log(`  [409 Sold Out] (Gracefully Rejected): ${count409}`);
   console.log(`  [Other/Errors]:                      ${countOther}`);
 
-  // Step 4: Allow worker a brief moment to process stream and flush batch transactions to PostgreSQL
-  console.log(`\n[Database Sync] Waiting for asynchronous worker to commit ledger transactions...`);
+  // Step 4: Allow worker a brief moment to consume the RabbitMQ queue and flush batch transactions to PostgreSQL
+  console.log(`\n[Database Sync] Waiting for asynchronous worker to drain RabbitMQ and commit ledger transactions...`);
   await new Promise((resolve) => setTimeout(resolve, 3000));
 
   // Step 5: Verify Final Consistency

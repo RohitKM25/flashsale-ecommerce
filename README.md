@@ -15,7 +15,7 @@
 8. [Implementation Details](#implementation-details)  
    - [Frontend](#frontend)  
    - [Backend (API & SSE)](#backend)  
-   - [Redis Atomic Reservation & Streams](#redis-atomic-reservation)  
+   - [Redis Atomic Reservation & RabbitMQ](#redis-atomic-reservation)  
    - [Worker & PostgreSQL Ledger](#worker)  
 9. [Data Flow Diagram](#data-flow-diagram)  
 10. [Testing & Verification](#testing--verification)  
@@ -143,7 +143,7 @@ During previous trial runs, the platform suffered from high latency, database ro
 5. The expiration token ensures payment abandonment, i.e., user drops within 5 minutes.
 
 6. Redis handles stock consistency over high traffic, protecting database from traffic spikes.
-### Asynchronous Message Queue (Decoupling & Throttling):
+### Asynchronous Message Queue (Decoupling & Throttling,RabbitMQ):
 1. The asynchronous message broker acts as a buffer, a FIFO queue, enabling syncing services with varying response times.
 
 2. Decoupling: the queue separates fast Redis reservations events from slow database writes. 
@@ -184,9 +184,10 @@ During previous trial runs, the platform suffered from high latency, database ro
 | **Frontend** | Vanilla HTML / CSS / JavaScript (Vite build) | UI, split‑screen layout, real‑time stock meter, benchmark panel |
 | **API** | Node + Express | REST endpoints (`/api/products/:id`, `/api/checkout`, `/api/admin/reset`) |
 | **Realtime** | Server‑Sent Events | Push order status (`QUEUED_FOR_CONFIRMATION`, `CONFIRMED`) |
-| **Cache / Queue** | Redis 7 (Lua script + Streams) | Atomic stock decrement & asynchronous order processing |
+| **Cache** | Redis 7 (Lua script + TTL reservations) | Atomic stock decrement and 5‑minute reservation holds |
+| **Message Queue** | RabbitMQ 3.13 (durable queue + publisher confirms) | Durable buffer between Redis reservations and PostgreSQL writes |
 | **Persistence** | PostgreSQL 16 | Product catalog, orders, immutable ledger |
-| **Worker** | Node worker process | Consumes stream, writes conditional SQL + ledger |
+| **Worker** | Node worker process | Consumes RabbitMQ batches, writes conditional SQL + ledger |
 | **Ingress** | Nginx (least‑conn) | Load‑balances API traffic across backend replicas |
 | **Containerisation** | Docker Compose | One‑click dev/prod environment |
 
@@ -200,10 +201,17 @@ flashsale-ecommerce/
 │   ├── src/
 │   │   ├── server.js
 │   │   ├── redis.js
+│   │   ├── rabbitmq.js     # Durable queue publisher (publisher confirms)
 │   │   └── sse.js
+│   ├── lua/
+│   │   ├── atomic_reserve.lua
+│   │   └── rollback_reservation.lua
 │   └── Dockerfile
-├── worker/                 # Order‑processing consumer
-│   └── src/worker.js
+├── worker/                 # RabbitMQ consumer / order‑processing worker
+│   ├── src/
+│   │   ├── worker.js
+│   │   └── rabbitmq.js
+│   └── Dockerfile
 ├── frontend/               # SPA source (Vite)
 │   ├── index.html
 │   ├── src/
@@ -252,9 +260,12 @@ flashsale-ecommerce/
 
    - `flashsale-postgres` (listening on `5432`)  
    - `flashsale-redis` (listening on `6379`)  
+   - `flashsale-rabbitmq` (AMQP on `5672`, management UI on `15672`)  
    - `flashsale-backend-1` & `flashsale-backend-2` (API, port 3000)  
-   - `flashsale-worker` (consumer)  
+   - `flashsale-worker` (RabbitMQ consumer)  
    - `flashsale-nginx` (exposes port 80 → `http://localhost`)  
+
+   RabbitMQ management UI: **http://localhost:15672** (`flashsale` / `flashsale`). The durable queue is `flashsale.orders` and failed messages dead‑letter to `flashsale.orders.dead`.
 
 5. **Verify DB seed**  
 
@@ -290,29 +301,33 @@ flashsale-ecommerce/
 
 * **`index.html`** – lightweight split‑screen layout with no placeholders, *Smartphone X* as the sole product.  
 * **`main.js`** – loads product data via `/api/products/:id`, updates the real‑time stock meter, debounces the *Reserve* button, and establishes an SSE channel for order status.  
-* **Benchmark panel** – triggers 1 k / 2 k concurrent requests via the worker‑exposed stress‑test endpoint, displays Redis / Postgres stock, committed orders, and oversell count.  
+* **Benchmark panel** – triggers 1 k / 2 k concurrent requests via the stress‑test endpoint, displays Redis / Postgres stock, committed orders, oversell count, and live RabbitMQ queue depth, consumers, and connection status.
 
 ### Backend  
 
 * **`server.js`** – REST API exposing product info, checkout, admin reset, and a health endpoint.  
 * **`redis.js`** – Lua script (`atomic_reserve.lua`) runs a single‑threaded atomic `DECRBY` only if enough stock remains, returning the new stock and a reservation token.  
-* **`sse.js`** – publishes order‑status events (`QUEUED_FOR_CONFIRMATION`, `CONFIRMED`, `SOLD_OUT`) on a per‑token channel; the client subscribes via `/api/sse/orders/:token`.  
+* **`rabbitmq.js`** – publishes each reservation to the durable `flashsale.orders` queue using a confirm channel; failed publishes compensate the Redis reservation.  
+* **`sse.js`** – publishes order‑status events (`QUEUED_FOR_CONFIRMATION`, `CONFIRMED`, `SOLD_OUT`) on a per‑token channel; the client subscribes via `/api/orders/:token/stream`.  
 
-### Redis Atomic Reservation & Streams  
+### Redis Atomic Reservation & RabbitMQ  
 
-1. **Checkout request** → backend invokes Lua script.  
-2. If stock is sufficient, script:  
-   - Decrements `available_stock` atomically.  
-   - Generates a unique `order_token`.  
-   - Pushes a JSON payload to `flashsale_orders` stream.  
-3. Returns the token + remaining stock to the client.  
+1. **Checkout request** → backend invokes the Redis Lua script and first reads product metadata from PostgreSQL.  
+2. If stock is sufficient, the script atomically:  
+   - Decrements `product:stock:<id>`.  
+   - Writes the 5‑minute reservation hold and per‑user limit keys.  
+   - Returns the token + remaining stock.  
+3. The backend publishes the reservation payload to RabbitMQ with **publisher confirms** and `persistent: true`.  
+4. The HTTP request returns `202 QUEUED_FOR_CONFIRMATION` immediately; database work is fully decoupled.  
+5. If RabbitMQ cannot confirm the publish, `rollback_reservation.lua` restores the stock and clears the hold, and the API returns `503` so no request is silently dropped or oversold.
 
-The script guarantees **no two concurrent reservations can exceed the original stock** because Redis commands are executed sequentially.  
+The script guarantees **no two concurrent reservations can exceed the original stock** because Redis commands are executed sequentially. RabbitMQ makes the hand‑off durable: messages survive broker restarts and are only removed after the worker ACKs them.
 
 ### Worker  
 
-* Consumes the `flashsale_orders` stream in a consumer group (`flashsale_workers_group`).  
-* Batches up to 25 orders, then performs a **conditional UPDATE** on PostgreSQL:  
+* Connects to RabbitMQ with a **prefetch of 25** (`BATCH_SIZE`), so the broker will not deliver more unacknowledged messages than the worker can handle.  
+* Buffers deliveries into a batch and flushes when the batch is full or after `BATCH_WINDOW_MS` (50 ms).  
+* For the whole batch it opens one PostgreSQL transaction and performs a **conditional UPDATE**:  
 
   ```sql
   UPDATE products
@@ -321,8 +336,10 @@ The script guarantees **no two concurrent reservations can exceed the original s
   RETURNING available_stock;
   ```
 
-* On success, inserts a row into `order_ledger` (immutable audit trail) and publishes a **SSE `CONFIRMED`** event.  
-* On failure (stock mismatch), publishes a **SSE `SOLD_OUT`** event.  
+* On success, inserts the order and appends to `order_ledger` (immutable audit trail), then publishes a **SSE `CONFIRMED`** event via Redis Pub/Sub.  
+* On stock mismatch, publishes a **SSE `SOLD_OUT`** event.  
+* Uses a `SAVEPOINT` per message and `ON CONFLICT (order_token) DO NOTHING` so redelivered messages are idempotent.  
+* ACKs all messages only after `COMMIT`; on any database error the transaction rolls back and all messages are NACKed for redelivery. Poison/unparseable messages are rejected without requeue and land in the `flashsale.orders.dead` queue.
 
 ### Database (Minimal Schema)  
 
@@ -345,25 +362,26 @@ flowchart TD
     UI[Browser UI] -->|GET /api/products/1| API[Backend API]
     UI -->|POST /api/checkout| API
     API -->|Lua script (atomic reserve)| Redis[Redis]
-    Redis -->|XADD to flashsale_orders| Stream[Redis Stream]
-    Stream -->|Consumer group| Worker[Worker Process]
+    API -->|Publish persistent order<br/>publisher confirm| Rabbit[RabbitMQ<br/>flashsale.orders]
+    Rabbit -->|Prefetch 25 / manual ACK| Worker[Worker Process]
     Worker -->|Conditional UPDATE (PG) & INSERT ledger| PG[PostgreSQL]
     Worker -->|Publish SSE| SSE[Server‑Sent Events]
     SSE -->|EventSource| UI
     UI -->|Benchmark actions| API
-    API -->|Read stats| Redis & PG
+    API -->|Read stats + queue depth| Redis & PG & Rabbit
 ```
 
 ---  
 
 ## Testing & Verification  
 
-* **Concurrent stress test** – click **“Launch 1,000 Concurrent Requests Blitz”**.  
+* **Concurrent stress test** – click **“Launch 1,000 Concurrent Requests Blitz”**, or run `node scripts/verify_concurrency.js`.  
 * Observe:  
   * `stat-redis-stock` → should match `available_stock` in Redis.  
   * `stat-pg-stock` → same value from PostgreSQL.  
   * `stat-orders-count` → number of rows inserted into `orders`.  
   * `stat-oversell-count` → always `0 (Guaranteed)`.  
+* RabbitMQ management UI → **http://localhost:15672** (`flashsale` / `flashsale`) shows the durable `flashsale.orders` queue, its consumer, and the dead‑letter queue.
 
 ---  
 

@@ -37,6 +37,9 @@ const statRedisStock = document.getElementById('stat-redis-stock');
 const statPgStock = document.getElementById('stat-pg-stock');
 const statOrdersCount = document.getElementById('stat-orders-count');
 const statOversellCount = document.getElementById('stat-oversell-count');
+const statRabbitmqStatus = document.getElementById('stat-rabbitmq-status');
+const statRabbitmqQueue = document.getElementById('stat-rabbitmq-queue');
+const statRabbitmqConsumers = document.getElementById('stat-rabbitmq-consumers');
 const toastContainer = document.getElementById('toast-container');
 
 // Render initial SVG icons (zero emojis)
@@ -261,6 +264,16 @@ async function refreshStats() {
     statOrdersCount.textContent = stats.totalOrdersCommitted;
     statOversellCount.textContent = `${stats.oversellCount} (Zero Oversell)`;
 
+    const queueDepth = stats.queuePendingMessages ?? stats.streamPendingMessages ?? 0;
+    const consumers = stats.queueConsumers ?? 0;
+    const rabbitConnected = Boolean(stats.rabbitMqConnected);
+
+    statRabbitmqStatus.textContent = rabbitConnected ? 'CONNECTED' : 'DEGRADED';
+    statRabbitmqStatus.classList.toggle('degraded', !rabbitConnected);
+    statRabbitmqQueue.textContent = queueDepth;
+    statRabbitmqQueue.classList.toggle('has-backlog', queueDepth > 0);
+    statRabbitmqConsumers.textContent = consumers;
+
     if (stats.replicaId) {
       replicaLabel.textContent = `Ingress: ${stats.replicaId}`;
     }
@@ -282,7 +295,7 @@ async function triggerBenchmark(totalRequests, concurrency) {
   btnResetInventory.disabled = true;
 
   appendBenchLog(`Initiating blitz of ${totalRequests} concurrent requests (concurrency: ${concurrency})...`);
-  appendBenchLog(`Decoupled pipeline active: Redis Lua single-threaded atomic reserve -> Redis Stream -> Worker -> Postgres Ledger`);
+  appendBenchLog(`Decoupled pipeline active: Redis Lua atomic reserve -> RabbitMQ durable queue -> Worker batch -> Postgres Ledger`);
 
   try {
     const res = await runStressTest(totalRequests, concurrency);
@@ -294,10 +307,16 @@ async function triggerBenchmark(totalRequests, concurrency) {
     appendBenchLog(`   Gracefully Rejected (409 Sold Out): ${b.soldOutCount}`);
     appendBenchLog(`   Final In-Memory Stock: ${b.finalRedisStock}`);
     appendBenchLog(`   Oversell Detected: ${b.oversellDetected ? 'CRITICAL ERROR' : 'ZERO (Perfect Consistency)'}`);
-    appendBenchLog(`--------------------------------------------------`);
 
     showToast(`Blitz complete: ${b.reservedCount} reserved, zero overselling!`, 'success');
-    await refreshStats();
+    const queueStats = await refreshStats();
+    if (queueStats) {
+      const depth = queueStats.queuePendingMessages ?? queueStats.streamPendingMessages ?? 0;
+      appendBenchLog(
+        `   RabbitMQ Queue Depth: ${depth} | Active Consumers: ${queueStats.queueConsumers ?? 0} | Status: ${queueStats.rabbitMqConnected ? 'CONNECTED' : 'DEGRADED'}`
+      );
+      appendBenchLog(`--------------------------------------------------`);
+    }
     await loadFlashProduct();
   } catch (err) {
     appendBenchLog(`Simulation error: ${err.message}`);

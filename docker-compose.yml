@@ -19,7 +19,7 @@ services:
       timeout: 3s
       retries: 10
 
-  # High-Throughput In-Memory Caching, Atomic Lua Scripting & Message Streams
+  # High-Throughput In-Memory Caching & Atomic Lua Reservations
   redis:
     image: redis:7-alpine
     container_name: flashsale-redis
@@ -35,6 +35,27 @@ services:
       timeout: 3s
       retries: 10
 
+  # Reliable Asynchronous Message Broker (decouples Redis reservations from PG writes)
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: flashsale-rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: flashsale
+      RABBITMQ_DEFAULT_PASS: flashsale
+      RABBITMQ_DEFAULT_VHOST: /
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   # Clustered Backend Replica 1
   backend-1:
     build:
@@ -47,10 +68,14 @@ services:
       REPLICA_ID: backend-replica-1
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
       REDIS_URL: redis://redis:6379
+      AMQP_URL: amqp://flashsale:flashsale@rabbitmq:5672
+      ORDERS_QUEUE: flashsale.orders
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   # Clustered Backend Replica 2 (Horizontal Scalability)
@@ -65,10 +90,14 @@ services:
       REPLICA_ID: backend-replica-2
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
       REDIS_URL: redis://redis:6379
+      AMQP_URL: amqp://flashsale:flashsale@rabbitmq:5672
+      ORDERS_QUEUE: flashsale.orders
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   # Asynchronous Queue Worker (Throttled DB Transactions & Immutable Ledger Append)
@@ -82,11 +111,16 @@ services:
       WORKER_ID: worker-node-1
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/flashsale
       REDIS_URL: redis://redis:6379
+      AMQP_URL: amqp://flashsale:flashsale@rabbitmq:5672
+      ORDERS_QUEUE: flashsale.orders
       BATCH_SIZE: 25
+      BATCH_WINDOW_MS: 50
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   # Nginx Ingress Load Balancer & Edge Static Asset Caching
@@ -106,3 +140,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:

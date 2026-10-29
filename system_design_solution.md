@@ -126,7 +126,7 @@ During previous trial runs, the platform suffered from high latency, database ro
 5. The expiration token ensures payment abandonment, i.e., user drops within 5 minutes.
 
 6. Redis handles stock consistency over high traffic, protecting database from traffic spikes.
-### Asynchronous Message Queue (Decoupling & Throttling):
+### Asynchronous Message Queue (Decoupling & Throttling, RabbitMQ):
 1. The asynchronous message broker acts as a buffer, a FIFO queue, enabling syncing services with varying response times.
 
 2. Decoupling: the queue separates fast Redis reservations events from slow database writes. 

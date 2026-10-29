@@ -54,8 +54,9 @@ if userId and userId ~= "" then
 end
 redis.call('SADD', productReservationsSet, orderToken)
 
--- 6. Enqueue order into FIFO Stream for Asynchronous Worker Batch Processing
-redis.call('XADD', 'flashsale_orders', '*', 'token', orderToken, 'payload', payloadJson)
+-- 6. The backend publishes this reservation to RabbitMQ only after this script
+--    returns SUCCESS. RabbitMQ publisher confirms protect the hand-off; if the
+--    publish fails, rollback_reservation.lua restores the reserved stock.
 
 return cjson.encode({
     status = "SUCCESS",

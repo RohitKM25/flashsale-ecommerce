@@ -420,6 +420,56 @@ body {
   color: var(--accent-success);
 }
 
+/* RabbitMQ Live Queue Telemetry */
+.queue-stat-card {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+
+.queue-stat-item {
+  background: var(--bg-subtle);
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: center;
+}
+
+.queue-stat-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.queue-stat-value {
+  font-family: var(--font-heading);
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--text-main);
+}
+
+.queue-status {
+  font-size: 1.05rem;
+  color: var(--accent-success);
+}
+
+.queue-status.degraded {
+  color: var(--accent-sale);
+}
+
+.queue-stat-value.has-backlog {
+  color: var(--accent-amber);
+}
+
 .bench-log-card {
   background: #0f172a;
   border-radius: var(--radius-sm);
@@ -533,5 +583,8 @@ body {
   }
   .navbar {
     padding: 16px 20px;
+  }
+  .queue-stat-card {
+    grid-template-columns: 1fr;
   }
 }

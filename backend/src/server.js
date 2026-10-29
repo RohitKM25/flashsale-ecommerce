@@ -3,7 +3,14 @@ import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import os from 'os';
 import { pool, query } from './db.js';
-import { redis, atomicReserve, getRedisStock, setRedisStock, resetProductState, initRedisScripts } from './redis.js';
+import { redis, atomicReserve, rollbackReservation, getRedisStock, setRedisStock, resetProductState, initRedisScripts } from './redis.js';
+import {
+  initRabbitMQ,
+  publishOrder,
+  getQueueStatus,
+  purgeOrdersQueue,
+  isRabbitConnected,
+} from './rabbitmq.js';
 import { initSseListener, handleSseConnection } from './sse.js';
 
 const app = express();
@@ -24,6 +31,7 @@ app.get('/api/health', async (req, res) => {
       uptimeSeconds: Math.floor(process.uptime()),
       database: dbTest.rows[0].healthy === 1 ? 'CONNECTED' : 'DEGRADED',
       redis: redisPing === 'PONG' ? 'CONNECTED' : 'DEGRADED',
+      rabbitmq: isRabbitConnected() ? 'CONNECTED' : 'DEGRADED',
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
@@ -189,11 +197,39 @@ app.post('/api/products/:id/checkout', async (req, res) => {
         });
       }
 
+      if (result.status === 'STOCK_NOT_INITIALIZED') {
+        return res.status(503).json({
+          success: false,
+          status: 'STOCK_NOT_INITIALIZED',
+          message: 'Flash sale is not initialized yet.',
+          latencyMs,
+          replicaId: REPLICA_ID,
+        });
+      }
+
+      // Hand the reservation to RabbitMQ with a publisher confirm. If the
+      // broker cannot persist the message, compensate the Redis reservation so
+      // stock is not lost from the sellable pool.
+      try {
+        await publishOrder(orderPayload);
+      } catch (publishErr) {
+        console.error('[API] RabbitMQ publish failed, rolling back reservation:', publishErr.message);
+        await rollbackReservation({ productId, quantity, orderToken, userId });
+        return res.status(503).json({
+          success: false,
+          status: 'QUEUE_UNAVAILABLE',
+          message: 'Order queue is temporarily unavailable. No stock was reserved. Please retry.',
+          orderToken,
+          latencyMs: Date.now() - startTime,
+          replicaId: REPLICA_ID,
+        });
+      }
+
       // Successful Atomic Reservation -> Status 202 Accepted (Order in Queue)
       return res.status(202).json({
         success: true,
         status: 'QUEUED_FOR_CONFIRMATION',
-        message: 'Order reservation successful! Stock decremented atomically in Redis. Confirming order in database...',
+        message: 'Order reservation accepted. RabbitMQ is buffering it for the database worker.',
         orderToken,
         remainingStock: result.remainingStock,
         unitPrice,
@@ -357,12 +393,12 @@ app.get('/api/admin/stats', async (req, res) => {
     // Check oversell: total orders must NEVER exceed initialStock (500)
     const oversellCount = Math.max(0, totalOrders - initialStock);
 
-    // Get stream length
-    let streamLen = 0;
+    // RabbitMQ backlog: messages waiting to be persisted by the worker
+    let queueStatus = { messages: 0, consumers: 0 };
     try {
-      streamLen = await redis.xlen('flashsale_orders');
+      queueStatus = await getQueueStatus();
     } catch {
-      streamLen = 0;
+      queueStatus = { messages: 0, consumers: 0 };
     }
 
     res.json({
@@ -374,7 +410,11 @@ app.get('/api/admin/stats', async (req, res) => {
       totalOrdersCommitted: totalOrders,
       totalLedgerEntries: totalLedger,
       oversellCount,
-      streamPendingMessages: streamLen,
+      queuePendingMessages: queueStatus.messages,
+      queueConsumers: queueStatus.consumers,
+      // Backwards-compatible field for existing dashboard clients.
+      streamPendingMessages: queueStatus.messages,
+      rabbitMqConnected: isRabbitConnected(),
       zeroOversellGuaranteed: oversellCount === 0,
       timestamp: new Date().toISOString(),
       replicaId: REPLICA_ID,
@@ -387,20 +427,29 @@ app.get('/api/admin/stats', async (req, res) => {
 app.post('/api/admin/reset', async (req, res) => {
   try {
     const initialStock = 500;
-    // 1. Reset PostgreSQL database tables
+
+    // 1. Drop any queued/in-flight work before resetting the two data stores.
+    const purged = await purgeOrdersQueue();
+    // Give the worker a moment to finish an in-flight batch before truncating.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    // 2. Reset PostgreSQL database tables
     await query('UPDATE products SET available_stock = $1, initial_stock = $1 WHERE id = 1', [initialStock]);
     await query('DELETE FROM order_ledger WHERE product_id = 1');
     await query('DELETE FROM orders WHERE product_id = 1');
 
-    // 2. Reset Redis stock and clear stream
+    // 3. Reset Redis stock and clear legacy stream state
     await resetProductState(1, initialStock);
 
-    console.log(`[Admin] Reset flash sale inventory to ${initialStock} across DB & Redis`);
+    console.log(
+      `[Admin] Reset flash sale inventory to ${initialStock}; RabbitMQ purged (${purged.ordersPurged} orders, ${purged.deadLettersPurged} dead letters)`
+    );
     res.json({
       success: true,
-      message: `Successfully reset flash sale stock to ${initialStock}. Orders and ledger cleared.`,
+      message: `Successfully reset flash sale stock to ${initialStock}. Orders, ledger and queues cleared.`,
       initialStock,
       availableStock: initialStock,
+      purgedMessages: purged.ordersPurged,
     });
   } catch (err) {
     console.error('[Admin] Reset error:', err);
@@ -431,6 +480,17 @@ app.post('/api/admin/simulate-rush', async (req, res) => {
 
       const userToken = `bench_usr_${idx}_${Math.random().toString(36).slice(2, 6)}`;
       const orderToken = `FS-BENCH-${idx}-${uuidv4().slice(0, 6).toUpperCase()}`;
+      const payload = {
+        orderToken,
+        userId: userToken,
+        productId: 1,
+        quantity: 1,
+        unitPrice: 399.99,
+        totalPrice: '399.99',
+        expiresAt: new Date(Date.now() + 300000).toISOString(),
+        createdAt: new Date().toISOString(),
+        replicaId: REPLICA_ID,
+      };
 
       try {
         const result = await atomicReserve({
@@ -438,22 +498,24 @@ app.post('/api/admin/simulate-rush', async (req, res) => {
           quantity: 1,
           orderToken,
           ttlSeconds: 300,
-          payload: {
-            orderToken,
-            userId: userToken,
-            productId: 1,
-            quantity: 1,
-            unitPrice: 399.99,
-            totalPrice: '399.99',
-            expiresAt: new Date(Date.now() + 300000).toISOString(),
-            createdAt: new Date().toISOString(),
-            replicaId: REPLICA_ID,
-          },
+          payload,
           userId: userToken,
         });
 
-        if (result.status === 'SUCCESS') reservedCount++;
-        else if (result.status === 'SOLD_OUT') soldOutCount++;
+        if (result.status === 'SUCCESS') {
+          try {
+            await publishOrder(payload);
+            reservedCount++;
+          } catch (publishErr) {
+            await rollbackReservation({
+              productId: 1,
+              quantity: 1,
+              orderToken,
+              userId: userToken,
+            });
+            errorCount++;
+          }
+        } else if (result.status === 'SOLD_OUT') soldOutCount++;
         else if (result.status === 'ALREADY_RESERVED') alreadyReservedCount++;
       } catch (err) {
         errorCount++;
@@ -491,6 +553,7 @@ app.post('/api/admin/simulate-rush', async (req, res) => {
 async function startServer() {
   try {
     await initRedisScripts();
+    await initRabbitMQ();
     initSseListener();
 
     // Check if flash sale stock is initialized in Redis; if not, sync from DB
