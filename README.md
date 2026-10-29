@@ -1,5 +1,10 @@
 # Flash‑Sale E‑Commerce Demo  
-*Zero overselling – high‑concurrency architecture*  
+
+UI
+<img width="1524" height="1089" alt="image" src="https://github.com/user-attachments/assets/78a60f69-489d-4b62-9a91-6fa70dc17693" />
+
+RabbitMQ
+<img width="1326" height="828" alt="image" src="https://github.com/user-attachments/assets/815456ee-2993-4077-812e-bbd364cc09da" />
 
 ---  
 
